@@ -1,0 +1,118 @@
+import OpenAI from "openai";
+import { SerpEvent } from "./serpapi";
+
+// Initialize OpenAI client
+// the newest OpenAI model is "gpt-4o" which was released May 13, 2024. do not change this unless explicitly requested by the user
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// Type definition for processed event
+export type ProcessedEvent = {
+  title: string;
+  venue: string;
+  time: string;
+  date: string;
+  description: string;
+  link: string;
+  source: string;
+};
+
+// Function to process and enhance events data using OpenAI
+export async function processEventsWithAI(
+  rawEvents: SerpEvent[],
+  date: string
+): Promise<ProcessedEvent[]> {
+  if (!process.env.OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY environment variable not set");
+  }
+
+  // If no events are found, return empty array
+  if (rawEvents.length === 0) {
+    return [];
+  }
+
+  try {
+    // Prepare the input for OpenAI
+    const prompt = `
+      You are BarHop NightPulse, an AI specializing in New York City nightlife event information.
+      
+      Below is a list of potential nightlife events in NYC for ${date}. Please analyze this data and:
+      
+      1. Verify these are actual nightlife events (clubs, bars, DJ sets, dance parties, etc.)
+      2. Improve the information by enhancing descriptions and filling in missing details where possible
+      3. Standardize the time format (e.g., "10:00 PM")
+      4. Provide venue details by adding neighborhood if missing
+      5. Remove any non-nightlife events
+      6. Ensure each event has a meaningful description
+      7. Limit the response to 10 most relevant nightlife events
+      
+      Format your response as a JSON array of events, each with the following structure:
+      {
+        "title": "Event name",
+        "venue": "Venue name, Neighborhood",
+        "time": "Time in format like 10:00 PM",
+        "date": "${date}",
+        "description": "Short description of the event",
+        "link": "URL to event page",
+        "source": "Source of information"
+      }
+      
+      Here is the raw event data:
+      ${JSON.stringify(rawEvents, null, 2)}
+    `;
+
+    // Call OpenAI API
+    const response = await openai.chat.completions.create({
+      model: "gpt-4o",
+      messages: [
+        {
+          role: "system",
+          content:
+            "You are BarHop NightPulse, an AI specializing in NYC nightlife event information. Be concise and accurate in your responses.",
+        },
+        {
+          role: "user",
+          content: prompt,
+        },
+      ],
+      response_format: { type: "json_object" },
+      temperature: 0.3, // Lower temperature for more factual responses
+    });
+
+    // Parse the response
+    const content = response.choices[0].message.content;
+    if (!content) {
+      throw new Error("No content in OpenAI response");
+    }
+
+    const parsedResponse = JSON.parse(content);
+    
+    // Ensure the response has an 'events' array
+    const processedEvents = Array.isArray(parsedResponse) 
+      ? parsedResponse 
+      : parsedResponse.events || [];
+
+    // Validate and format each event
+    return processedEvents.map((event: any): ProcessedEvent => ({
+      title: event.title || "Unknown Event",
+      venue: event.venue || "NYC Venue",
+      time: event.time || "TBD",
+      date: date,
+      description: event.description || "No description available",
+      link: event.link || "#",
+      source: event.source || "Web Search"
+    }));
+  } catch (error) {
+    console.error("Error processing events with OpenAI:", error);
+    
+    // Fallback: Return sanitized raw events if AI processing fails
+    return rawEvents.map(event => ({
+      title: event.title,
+      venue: event.venue || "NYC Venue",
+      time: event.time || "TBD",
+      date: date,
+      description: event.description || "No description available",
+      link: event.link || "#",
+      source: event.source || "Web Search"
+    }));
+  }
+}
