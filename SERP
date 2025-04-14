@@ -1,0 +1,191 @@
+import { z } from 'zod';
+
+// Define environment variables for API key
+const SERPAPI_KEY = process.env.SERPAPI_KEY || process.env.SERP_API_KEY || "";
+
+// Define the search result schema
+const serpEventSchema = z.object({
+  title: z.string(),
+  venue: z.string().optional(),
+  time: z.string().optional(),
+  date: z.string(),
+  description: z.string().optional(),
+  link: z.string().url().optional(),
+  source: z.string().optional(),
+});
+
+export type SerpEvent = z.infer<typeof serpEventSchema>;
+
+// Function to search for NYC nightlife events on a specific date
+export async function searchEvents(date: string): Promise<SerpEvent[]> {
+  if (!SERPAPI_KEY) {
+    throw new Error("SERPAPI_KEY environment variable not set");
+  }
+
+  // Format the date for the query (e.g., "April 20 2025" format)
+  const searchDate = new Date(date);
+  const formattedDate = searchDate.toLocaleDateString('en-US', {
+    month: 'long',
+    day: 'numeric',
+    year: 'numeric'
+  });
+
+  // Create search query for NYC nightlife events
+  const query = `nightlife events nyc ${formattedDate} club bar dj party`;
+  
+  // Encode for URL
+  const encodedQuery = encodeURIComponent(query);
+
+  try {
+    // Use SerpAPI Google Search
+    const url = `https://serpapi.com/search.json?q=${encodedQuery}&location=New+York,New+York,United+States&gl=us&hl=en&api_key=${SERPAPI_KEY}`;
+    
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      throw new Error(`SERP API responded with status ${response.status}`);
+    }
+
+    const data = await response.json();
+    
+    // Process the data to extract events
+    const events: SerpEvent[] = [];
+
+    // Process organic results
+    if (data.organic_results) {
+      for (const result of data.organic_results) {
+        if (result.title && result.link && isNightlifeEvent(result.title)) {
+          events.push({
+            title: sanitizeString(result.title),
+            description: result.snippet ? sanitizeString(result.snippet) : "No description available",
+            link: result.link,
+            date: date,
+            time: extractTime(result.title) || "TBD",
+            venue: extractVenue(result.title, result.snippet) || "NYC Venue",
+            source: extractSource(result.displayed_link) || "Web Search"
+          });
+        }
+      }
+    }
+
+    // Process events data if available
+    if (data.events_results) {
+      for (const event of data.events_results) {
+        if (event.title && isNightlifeEvent(event.title)) {
+          events.push({
+            title: sanitizeString(event.title),
+            description: event.description ? sanitizeString(event.description) : "No description available",
+            link: event.link || "#",
+            date: date,
+            time: event.time || "TBD",
+            venue: event.venue || "NYC Venue",
+            source: "Event Listing"
+          });
+        }
+      }
+    }
+
+    return events;
+  } catch (error) {
+    console.error("Error searching for events:", error);
+    throw error;
+  }
+}
+
+// Helper function to check if an event is a nightlife event
+function isNightlifeEvent(title: string): boolean {
+  const nightlifeKeywords = [
+    'party', 'club', 'dj', 'dance', 'nightclub', 'bar', 
+    'lounge', 'disco', 'techno', 'house music', 'live music',
+    'night', 'rave', 'nightlife'
+  ];
+  
+  const lowercaseTitle = title.toLowerCase();
+  return nightlifeKeywords.some(keyword => lowercaseTitle.includes(keyword));
+}
+
+// Helper function to extract venue from title or snippet
+function extractVenue(title: string, snippet?: string): string | undefined {
+  // Common patterns for venues in NYC
+  const venuePatterns = [
+    /at\s+([^,\.]+)/i,
+    /in\s+([^,\.]+)/i,
+    /([^,\.]+)\s+in\s+brooklyn/i,
+    /([^,\.]+)\s+in\s+manhattan/i,
+    /([^,\.]+)\s+in\s+queens/i,
+    /([^,\.]+)\s+in\s+nyc/i,
+  ];
+  
+  const text = title + ' ' + (snippet || '');
+  
+  for (const pattern of venuePatterns) {
+    const match = text.match(pattern);
+    if (match && match[1]) {
+      return match[1].trim();
+    }
+  }
+  
+  return undefined;
+}
+
+// Helper function to extract time from title
+function extractTime(title: string): string | undefined {
+  // Look for time patterns like "10 PM", "10:30 PM", etc.
+  const timePattern = /\b(1[0-2]|0?[1-9])(?::([0-5][0-9]))?\s*(am|pm|AM|PM)\b/;
+  
+  const match = title.match(timePattern);
+  if (match) {
+    return match[0];
+  }
+  
+  return undefined;
+}
+
+// Helper function to extract source from displayed link
+function extractSource(displayedLink?: string): string | undefined {
+  if (!displayedLink) return undefined;
+  
+  // Extract domain from displayed link
+  const domainMatch = displayedLink.match(/^(?:https?:\/\/)?(?:www\.)?([^\/]+)/i);
+  if (domainMatch && domainMatch[1]) {
+    const domain = domainMatch[1];
+    
+    // Map common domains to readable source names
+    const sourceMappings: Record<string, string> = {
+      'timeout.com': 'TimeOut NY',
+      'eventbrite.com': 'Eventbrite',
+      'residentadvisor.net': 'Resident Advisor',
+      'ra.co': 'RA',
+      'nycgo.com': 'NYC Go',
+      'nyc.com': 'NYC.com',
+      'thrillist.com': 'Thrillist',
+      'seatgeek.com': 'SeatGeek',
+      'ticketmaster.com': 'Ticketmaster',
+      'livenation.com': 'Live Nation'
+    };
+    
+    for (const [key, value] of Object.entries(sourceMappings)) {
+      if (domain.includes(key)) {
+        return value;
+      }
+    }
+    
+    // Default to domain name if no mapping found
+    return domain.split('.')[0].charAt(0).toUpperCase() + domain.split('.')[0].slice(1);
+  }
+  
+  return "Web Search";
+}
+
+// Helper function to sanitize strings
+function sanitizeString(str: string): string {
+  return str
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/\s+/g, ' ')
+    .trim();
+}
